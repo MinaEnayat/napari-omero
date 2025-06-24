@@ -2,13 +2,13 @@ import warnings
 
 import napari.viewer
 from magicgui import magic_factory
+from magicgui.widgets import PushButton
 from napari.layers import Image, Labels
 from napari.utils.notifications import show_info
 
-from napari_omero.plugins.omero import save_rois
 from napari_omero.plugins.loaders import load_rois
+from napari_omero.plugins.omero import save_rois
 from napari_omero.utils import lookup_obj
-from magicgui.widgets import PushButton
 from omero.cli import ProxyStringType
 
 from .gateway import QGateWay
@@ -39,10 +39,11 @@ def _init(widget):
 
         show_info(f"Loaded ROIs from OMERO image id {image_id}.")
 
+
 @magic_factory(
     omero_image={"label": "Layer from OMERO to annotate"},
     call_button="Upload Annotations to OMERO",
-    widget_init=_init
+    widget_init=_init,
 )
 def save_rois_to_OMERO(omero_image: Image) -> None:
     """Upload annotations for a chosen image to OMERO.

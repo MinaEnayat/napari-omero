@@ -333,7 +333,7 @@ def load_rois(conn: BlitzGateway, image: ImageWrapper) -> list[LayerData]:
             "z_index": np.array(all_z_indices, dtype=int),
             "t_index": np.array(all_t_indices, dtype=int),
             "image_id": np.full(len(all_coords), img_id, dtype=int),
-            },
+        },
     }
     return [(all_coords, roi_layer_meta, "shapes")]
 
@@ -358,9 +358,7 @@ def parse_omero_shape(shape) -> Optional[LayerData]:
         points = shape.getPoints().getValue()
         coords = [
             [float(y), float(x)]
-            for x, y, *_ in (
-                p.split(",") for p in points.split(" ")
-            )
+            for x, y, *_ in (p.split(",") for p in points.split(" "))
         ]
         meta = {"shape_type": "polygon", "name": "ROI_Polygon"}
         return (coords, meta, "shapes")
