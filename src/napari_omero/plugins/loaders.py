@@ -407,9 +407,7 @@ def parse_omero_shape(shape) -> Optional[LayerData]:
         points = shape.getPoints().getValue()
         coords = [
             [float(y), float(x)]
-            for x, y, *_ in (
-                p.split(",") for p in points.split(" ")
-            )
+            for x, y, *_ in (p.split(",") for p in points.split(" "))
         ]
         meta = {"shape_type": "polygon", "name": "ROI_Polygon"}
         return (coords, meta, "shapes")
