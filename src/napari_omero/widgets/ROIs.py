@@ -43,10 +43,19 @@ def _init(widget):
         if points_meta is None and shapes_meta is None:
             show_info(f"No ROIs or points found for OMERO image id {img_id}.")
             return
+
         if shapes_meta:
-            viewer.add_shapes(shapes_coords, **shapes_meta)
+            shapes_layer = viewer.add_shapes(shapes_coords, **shapes_meta)
+            print("Shape Layers", shapes_layer)
+            shapes_layer.current_edge_color = "white"
+            shapes_layer.current_face_color = "transparent"
+            shapes_layer.current_text = ""
+
         if points_meta:
-            viewer.add_points(points_coords, **points_meta)
+            points_layer = viewer.add_points(points_coords, **points_meta)
+            points_layer.current_border_color = "white"
+            points_layer.current_face_color = "transparent"
+            points_layer.current_text = ""
 
 
 @magic_factory(
@@ -80,14 +89,19 @@ def save_rois_to_OMERO(omero_image: Image) -> None:
         )
 
     gateway = QGateWay()
-    image_id = omero_image.metadata["omero"]["@id"]
+    img_id = omero_image.metadata["omero"]["@id"]
 
     image_wrapper = lookup_obj(
-        gateway.conn, ProxyStringType("Image")(f"Image:{image_id}")
+        gateway.conn, ProxyStringType("Image")(f"Image:{img_id}")
     )
 
     viewer = napari.viewer.current_viewer()
-    save_rois(viewer=viewer, image=image_wrapper)
+    save_changes = save_rois(viewer=viewer, image=image_wrapper)
 
     trg = image_wrapper.getName()
-    show_info(f"All annotation layers uploaded to OMERO image id {image_id}: {trg}")
+    show_info(f"All annotation layers uploaded to OMERO image id {img_id}: {trg}")
+
+    if save_changes:
+        show_info(f"Changes saved to OMERO image id {img_id}: {trg}")
+    else:
+        show_info(f"No changes detected — nothing was saved for image id {img_id}.")

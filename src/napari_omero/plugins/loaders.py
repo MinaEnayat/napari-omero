@@ -336,13 +336,8 @@ def load_rois(conn: BlitzGateway,
         roi_layer_meta = {
             "face_color": all_face_colors,
             "scale": (1, pixel_size_z, size_y, size_x),
-            "text": {
-                "string": "{comment}",
-                "size": 7,
-                "color": "white",
-            },
+            "text": all_comments,
             "features": {
-                "comment": np.array(all_comments, dtype=object),
                 "roi_id": np.array(all_roi_ids, dtype=object),
                 "shape_id": np.array(all_shape_ids, dtype=object),
                 "z_index": np.array(all_z_indices, dtype=int),
@@ -356,7 +351,6 @@ def load_rois(conn: BlitzGateway,
             roi_layer_meta["shape_type"] = all_shape_types
             roi_layer_meta["edge_width"] = 1
             roi_layer_meta["edge_color"] = all_edge_colors
-            roi_layer_meta["text"]["anchor"] = "center"
         else:  # specific metadata for points
             roi_layer_meta["name"] = f"OMERO Points {img_id}"
             roi_layer_meta["symbol"] = "o"
@@ -430,4 +424,3 @@ def parse_omero_shape(shape) -> Optional[LayerData]:
 
     # Return None if shape type not supported
     return None
-
