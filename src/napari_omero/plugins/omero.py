@@ -233,6 +233,8 @@ def create_omero_shape(shape_type, data):
         shape = PolylineI() if shape_type == "path" else PolygonI()
         # points = "10,20, 50,150, 200,200, 250,75"
         points = [f"{get_x(d)},{get_y(d)}" for d in data]
+        if shape_type == "polygon" and points[0] != points[-1]:
+            points.append(points[0])
         shape.points = rstring(", ".join(points))
     elif shape_type in ["rectangle", "ellipse"]:
         # corners go anti-clockwise starting top-left
@@ -245,31 +247,18 @@ def create_omero_shape(shape_type, data):
         y3 = get_y(data[2])
         y4 = get_y(data[3])
         if shape_type == "rectangle":
-            # Rectangle not rotated
-            if x1 == x2:
-                shape = RectangleI()
-                # TODO: handle 'updside down' rectangle x3 < x1
-                shape.x = rdouble(x1)
-                shape.y = rdouble(y1)
-                shape.width = rdouble(x3 - x1)
-                shape.height = rdouble(y2 - y1)
-            else:
-                # Rotated Rectangle - save as Polygon
-                shape = PolygonI()
-                points_str = f"{x1},{y1}, {x2},{y2}, {x3},{y3}, {x4},{y4}"
-                shape.points = rstring(points_str)
+            shape = RectangleI()
+            shape.x = rdouble(x1)
+            shape.y = rdouble(y1)
+            shape.width = rdouble(x3 - x1)
+            shape.height = rdouble(y3 - y1)
         elif shape_type == "ellipse":
             # Ellipse not rotated (ignore floating point rouding)
-            if int(x1) == int(x2):
-                shape = EllipseI()
-                shape.x = rdouble((x1 + x3) / 2)
-                shape.y = rdouble((y1 + y2) / 2)
-                shape.radiusX = rdouble(abs(x3 - x1) / 2)
-                shape.radiusY = rdouble(abs(y2 - y1) / 2)
-            else:
-                # TODO: Need to calculate transformation matrix
-                print("Rotated Ellipse not yet supported!")
-
+            shape = EllipseI()
+            shape.x = rdouble((x1 + x3) / 2)
+            shape.y = rdouble((y1 + y3) / 2)
+            shape.radiusX = rdouble(abs(x3 - x1) / 2)
+            shape.radiusY = rdouble(abs(y3 - y1) / 2)
     if shape is not None:
         shape.theZ = rint(z_index)
         shape.theT = rint(t_index)

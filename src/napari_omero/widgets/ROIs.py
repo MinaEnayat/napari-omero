@@ -46,7 +46,6 @@ def _init(widget):
 
         if shapes_meta:
             shapes_layer = viewer.add_shapes(shapes_coords, **shapes_meta)
-            print("Shape Layers", shapes_layer)
             shapes_layer.current_edge_color = "white"
             shapes_layer.current_face_color = "transparent"
             shapes_layer.current_text = ""
