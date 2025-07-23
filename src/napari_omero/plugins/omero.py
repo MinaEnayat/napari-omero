@@ -10,6 +10,8 @@ from qtpy.QtWidgets import QPushButton
 
 import omero.clients
 from napari_omero.utils import lookup_obj, obj_to_proxy_string
+from napari_omero.plugins.loaders import parse_omero_shape, load_rois
+from collections import defaultdict
 from omero.cli import CLI, BaseControl, ProxyStringType
 from omero.gateway import BlitzGateway, PixelsWrapper
 from omero.model import (
@@ -167,28 +169,233 @@ def save_rois(viewer, image):
     >>> from napari_omero import *
     >>> save_rois(viewer, omero_image).
     """
+    save_changes = False
     conn = image._conn
+    img_id = image.id
+    roi_service = conn.getRoiService()
+    result = roi_service.findByImage(img_id, None)
 
+    # Extract OMERO ROIs to compare with Napari layers for duplicate detection
+    omero_rois = extract_omero_rois_coords(image, result)
     for layer in viewer.layers:
         if type(layer) is points_layer:
             for p in layer.data:
-                point = create_omero_point(p)
-                roi = create_roi(conn, image.id, [point])
-                print(f"Created ROI: {roi.id.val}")
+                points_layer_name = get_point_name(conn, image)
+                print("Creating Points in roi", points_layer_name)
+                # point = create_omero_point(p)
+                # roi = create_roi(conn, image.id, [point])
+                # print(f"Created ROI: {roi.id.val}")
         elif type(layer) is shapes_layer:
             if len(layer.data) == 0 or len(layer.shape_type) == 0:
                 continue
-            shape_types = layer.shape_type
-            if isinstance(shape_types, str):
-                shape_types = [layer.shape_type for _ in range(len(layer.data))]
-            for shape_type, data in zip(shape_types, layer.data):
-                shape = create_omero_shape(shape_type, data)
-                if shape is not None:
-                    roi = create_roi(conn, image.id, [shape])
-                    print(f"Created ROI: {roi.id.val}")
+
+            # Get the corresponding OMERO ROI layer name
+            napari_layer_name = get_shapelayer_name(conn, image)
+            if layer.name == napari_layer_name:
+                shape_types = layer.shape_type
+                if isinstance(shape_types, str):
+                    shape_types = [
+                        layer.shape_type for _ in range(len(layer.data))
+                    ]
+
+                # Collect existing OMERO shape IDs
+                omero_shape_ids = {shape_id for roi in omero_rois.values() for shape_id in roi.keys()}
+
+                napari_shape_ids = {shape_id for shape_id in layer.properties['shape_id'] if shape_id is not None}
+
+                shapes_to_delete = omero_shape_ids - napari_shape_ids
+
+                if shapes_to_delete:
+                    # delete_rois(conn, result, shapes_to_delete)
+                    save_changes = True
+
+                # CHECK DUPLICATE, EDIT, CREATE NEW
+                shapes_to_add = []
+                napari_rois = layer.properties["roi_id"]
+                napari_shapes = layer.properties["shape_id"]
+                layer_data = group_rois_for_omero(layer.data, napari_rois, napari_shapes, shape_types)
+
+                # Process each shape
+                for data in layer_data:
+
+                    shape_id = data['shape_id']
+                    roi_id = data['roi_id']
+                    napari_coords = data['coords']
+                    napari_coords[:, 2:4] = numpy.round(napari_coords[:, 2:4], 6)
+
+                    if shape_id is not None and shape_id in napari_shape_ids:
+
+                        omero_shape_data = omero_rois[roi_id][shape_id]
+                        omero_coords = numpy.array(omero_shape_data["coordinates"], dtype=numpy.float32)
+                        omero_coords[:, 2:4] = numpy.round(omero_coords[:, 2:4], 6)
+                        print("Omero coords", omero_coords)
+                        print("napari coords", napari_coords)
+
+                        same_coords = (
+                            napari_coords.shape == omero_coords.shape
+                            and numpy.allclose(napari_coords, omero_coords, atol=1e-5, equal_nan=True)
+                        )
+                        print("Same coords", same_coords)
+                        if same_coords:
+                            print("Duplicate")
+                            continue
+                        else:
+                            print("We have to update and add")
+                            save_changes = True
+                            continue
+                    else:
+                        # New shape, prepare to create new ROI
+                        shape = create_omero_shape(shape_type, data)
+                        if shape is not None:
+                            shapes_to_add.append(shape)
+
+                    if shapes_to_add:
+                        roi = create_roi(conn, img_id, [shape])
+                        print(f"Created ROI: {roi.id.val}")
+                    save_changes = True
+                    # napari_shape_ids.clear()
+
+            else:
+                # Layer is not from OMERO, create new ROIs for all shapes
+                shape_types = layer.shape_type
+
+                if isinstance(shape_types, str):
+                    shape_types = [
+                        layer.shape_type for _ in range(len(layer.data))
+                        ]
+
+                for shape_type, data in zip(shape_types, layer.data):
+                    shape = create_omero_shape(shape_type, data)
+                    if shape is not None:
+                        roi = create_roi(conn, image.id, [shape])
+                        print(f"Created ROI: {roi.id.val}")
+                save_changes = True
+
         elif type(layer) is labels_layer:
             print("Saving Labels...")
             save_labels(layer, image)
+
+    return save_changes
+
+
+def extract_omero_rois_coords(image, result):
+    """Extract OMERO ROIs and their coordinates in (T, Z, Y, X) format."""
+    omero_rois = {}
+
+    # Loop over each ROI in the result
+    for roi in result.rois:
+        roi_id = roi.getId().getValue()
+        if roi_id is None:
+            continue
+
+        omero_rois[roi_id] = {}
+
+        # Loop over each shape in the ROI
+        for shape in roi.copyShapes():
+            shape_type = shape.__class__.__name__
+            if shape is None:
+                continue  # Skip invalid shapes
+
+            shape_id = shape.getId().getValue()
+
+            # Get Z and T indices
+            theZ = shape.getTheZ()
+            z_val = theZ.getValue() if theZ else None
+            theT = shape.getTheT()
+            t_val = theT.getValue() if theT else None
+
+            # Handle OMERO Points separately
+            if shape_type == "PointI":
+                x = float(shape.getX().getValue())
+                y = float(shape.getY().getValue())
+
+                coords_4d = [[
+                    (t_val if t_val is not None else None),
+                    (z_val if z_val is not None else None),
+                    y, x
+                ]]
+                meta_shape_type = "point"
+
+            else:
+                # Parse shape geometry using existing parser
+                parsed = parse_omero_shape(shape)
+                if parsed is None:
+                    continue
+
+                coords_2d, meta, _ = parsed
+                coords_2d = numpy.round(coords_2d, 6)
+
+                coords_4d = [[
+                    (t_val if t_val is not None else None),
+                    (z_val if z_val is not None else None),
+                    y, x
+                ] for y, x in coords_2d]
+                meta_shape_type = meta["shape_type"]
+
+            # Get optional text/comment for the shape
+            text_value = shape.getTextValue()
+            shape_text = text_value.getValue() if text_value else ""
+
+            # Store data in the ROI dict
+            omero_rois[roi_id][shape_id] = {
+                "coordinates": coords_4d,
+                "shape_text": shape_text,
+                "shape_type": meta_shape_type,
+            }
+
+    return omero_rois
+
+
+def get_point_name(conn, image):
+    _, points_layer_meta = load_rois(conn, image, load_points=True)
+    if points_layer_meta:
+        return points_layer_meta.get("name", None)
+    return None
+
+
+def get_shapelayer_name(conn, image):
+    _, roi_layer_meta = load_rois(conn, image, load_points=False)
+    if roi_layer_meta:
+        return roi_layer_meta.get("name", None)
+
+
+def group_rois_for_omero(all_coords, roi_ids, shape_ids, shape_types):
+    array_counts = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+    array_storage = defaultdict(lambda: defaultdict(dict))
+    total_counts = defaultdict(lambda: defaultdict(int))
+    shape_type_storage = defaultdict(dict)
+
+    #  Count how many times each XY set appears
+    for coords, roi_id, shape_id, shape_type in zip(all_coords, roi_ids, shape_ids, shape_types):
+        arr = numpy.array(coords, dtype=numpy.float32).copy()
+        yx_coords = tuple(map(tuple, numpy.round(arr[:, 2:4], 5)))
+
+        if yx_coords not in array_storage[roi_id][shape_id]:
+            array_storage[roi_id][shape_id][yx_coords] = arr.copy()
+
+        array_counts[roi_id][shape_id][yx_coords] += 1
+        total_counts[roi_id][shape_id] += 1
+        shape_type_storage[roi_id][shape_id] = shape_type
+
+    # Build final shapes for OMERO
+    unique_shapes = []
+    for roi_id, shape_dict in array_counts.items():
+        for shape_id, counts in shape_dict.items():
+            latest_arr = list(counts.keys())[-1]
+            arr = array_storage[roi_id][shape_id][latest_arr].copy()
+
+            # If multiple arrays → force T/Z = nan
+            if total_counts[roi_id][shape_id] > 1:
+                arr[:, 0:2] = numpy.nan
+
+            unique_shapes.append({
+                "roi_id": roi_id,
+                "shape_id": shape_id,
+                "shape_type": shape_type_storage[roi_id][shape_id],
+                "coords": arr
+            })
+
+    return unique_shapes
 
 
 def get_x(coordinate):
