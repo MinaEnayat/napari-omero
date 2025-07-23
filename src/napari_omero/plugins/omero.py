@@ -200,7 +200,7 @@ def save_rois(viewer, image):
 
                 # Collect existing OMERO shape IDs
                 omero_shape_ids = {shape_id for roi in omero_rois.values() for shape_id in roi.keys()}
-
+                print("all shape id", layer.properties['shape_id'])
                 napari_shape_ids = {shape_id for shape_id in layer.properties['shape_id'] if shape_id is not None}
 
                 shapes_to_delete = omero_shape_ids - napari_shape_ids
@@ -235,17 +235,17 @@ def save_rois(viewer, image):
                             napari_coords.shape == omero_coords.shape
                             and numpy.allclose(napari_coords, omero_coords, atol=1e-5, equal_nan=True)
                         )
-                        print("Same coords", same_coords)
                         if same_coords:
                             print("Duplicate")
                             continue
                         else:
                             print("We have to update and add")
+                            update_shape(conn, img_id, shape_id, napari_coords)
                             save_changes = True
                             continue
                     else:
                         # New shape, prepare to create new ROI
-                        shape = create_omero_shape(shape_type, data)
+                        shape = create_omero_shape(shape_types, data)
                         if shape is not None:
                             shapes_to_add.append(shape)
 
@@ -396,6 +396,105 @@ def group_rois_for_omero(all_coords, roi_ids, shape_ids, shape_types):
             })
 
     return unique_shapes
+
+
+def update_shape(conn, image_id, duplicate_shape_id, napari_coords):
+    """
+    Updates a shape in OMERO with new coordinates from Napari.
+
+    :param conn: OMERO connection object.
+    :param image_id: The OMERO image ID.
+    :param duplicate_: The ID of the shape to update.
+    :param napari_coords: The new coordinates from Napari Layer.
+    """
+    # Get ROIs for the image
+    roi_service = conn.getRoiService()
+    result = roi_service.findByImage(image_id, None)
+
+    for roi in result.rois:
+        if roi is None:
+            continue  # Skip invalid ROIs
+
+        if roi.getImage().getId().getValue() == image_id:
+            for shape in roi.copyShapes():
+                shape_id = shape.getId().getValue()
+                if shape_id is None:
+                    continue  # Skip shapes without valid ID
+
+                if shape_id == duplicate_shape_id:
+                    # Determine shape type (normalized, lowercase)
+                    # RectangleI - rectangle
+                    shape_type = shape.__class__.__name__
+
+                    # Extract X coordinates
+                    x1 = napari_coords[0][3]
+                    x2 = napari_coords[1][3]
+                    x3 = napari_coords[2][3]
+                    x4 = napari_coords[3][3]
+
+                    # Extract Y coordinates
+                    y1 = napari_coords[0][2]
+                    y2 = napari_coords[1][2]
+                    y3 = napari_coords[2][2]
+                    y4 = napari_coords[3][2]
+
+                    # Update shape coordinates based on shape type
+                    if shape_type == "PolygonI":
+                        new_points = " ".join(
+                                        f"{y},{x}" for x, y in napari_coords[:, 2:]
+                                    )
+                        shape.setPoints(rstring(new_points))
+
+                    elif shape_type == "RectangleI":
+                        # Update rectangle position and size
+                        shape.setX(rdouble(x1))
+                        shape.setY(rdouble(y1))
+                        shape.setWidth(rdouble(abs(x3 - x1)))
+                        shape.setHeight(rdouble(abs(y3 - y1)))
+
+                    elif shape_type == "EllipseI":
+                        # Update ellipse center and radii
+                        shape.setX(rdouble((x1 + x3) / 2))
+                        shape.setY(rdouble((y1 + y3) / 2))
+                        shape.setRadiusX(rdouble(abs(x3 - x1) / 2))
+                        shape.setRadiusY(rdouble(abs(y3 - y1) / 2))
+
+                    t_index = napari_coords[0][0]
+                    z_index = napari_coords[0][1]
+                    if not (t_index is None or numpy.isnan(t_index)):
+                        shape.setTheT(rint(int(t_index)))
+                    if not (z_index is None or numpy.isnan(z_index)):
+                        shape.setTheZ(rint(int(z_index)))
+
+                    # Add comment to indicate edit origin
+                    shape.setTextValue(rstring("Edited in Napari"))
+
+                    # Save the updated shape back to OMERO
+                    conn.getUpdateService().saveAndReturnObject(shape)
+
+                    return True  # Successfully updated
+
+    return False
+
+
+def clean_duplicate_shape_ids(layer):
+    """
+    Remove duplicate shape IDs in a Napari layer and reset their properties.
+
+    When creating ROIs in the same layer (e.g., loaded OMERO ROIs),
+    duplicate shape IDs can occur. We set these to None for now.
+    Proper shape IDs will be assigned later by create_roi.
+    """
+    processed_ids = set()
+    for i, shape_id in enumerate(layer.properties['shape_id']):
+        if shape_id is not None:
+            if shape_id in processed_ids:
+                layer.properties['shape_id'][i] = None
+                layer.properties['roi_id'][i] = None
+                # print(f"Cleared duplicate shape at index {i}")
+            else:
+                processed_ids.add(shape_id)
+    return layer
 
 
 def get_x(coordinate):
