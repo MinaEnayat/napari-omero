@@ -1,4 +1,5 @@
 import sys
+from collections import defaultdict
 from functools import wraps
 
 import napari
@@ -9,9 +10,8 @@ from napari.layers.shapes.shapes import Shapes as shapes_layer
 from qtpy.QtWidgets import QPushButton
 
 import omero.clients
+from napari_omero.plugins.loaders import load_rois, parse_omero_shape
 from napari_omero.utils import lookup_obj, obj_to_proxy_string
-from napari_omero.plugins.loaders import parse_omero_shape, load_rois
-from collections import defaultdict
 from omero.cli import CLI, BaseControl, ProxyStringType
 from omero.gateway import BlitzGateway, PixelsWrapper
 from omero.model import (
@@ -181,7 +181,7 @@ def save_rois(viewer, image):
         if type(layer) is points_layer:
             if len(layer.data) == 0:
                 continue
-            for p in layer.data:
+            for _p in layer.data:
                 points_layer_name = get_point_name(conn, image)
                 print("Creating Points in roi", points_layer_name)
                 # point = create_omero_point(p)
@@ -196,13 +196,17 @@ def save_rois(viewer, image):
             if layer.name == napari_layer_name:
                 shape_types = layer.shape_type
                 if isinstance(shape_types, str):
-                    shape_types = [
-                        layer.shape_type for _ in range(len(layer.data))
-                    ]
+                    shape_types = [layer.shape_type for _ in range(len(layer.data))]
 
                 # Collect existing OMERO shape IDs
-                omero_shape_ids = {shape_id for roi in omero_rois.values() for shape_id in roi.keys()}
-                napari_shape_ids = {shape_id for shape_id in layer.properties['shape_id'] if shape_id is not None}
+                omero_shape_ids = {
+                    shape_id for roi in omero_rois.values() for shape_id in roi.keys()
+                }
+                napari_shape_ids = {
+                    shape_id
+                    for shape_id in layer.properties["shape_id"]
+                    if shape_id is not None
+                }
 
                 shapes_to_delete = omero_shape_ids - napari_shape_ids
 
@@ -214,25 +218,29 @@ def save_rois(viewer, image):
                 shapes_to_add = []
                 napari_rois = layer.properties["roi_id"]
                 napari_shapes = layer.properties["shape_id"]
-                layer_data = group_rois_for_omero(layer.data, napari_rois, napari_shapes, shape_types)
+                layer_data = group_rois_for_omero(
+                    layer.data, napari_rois, napari_shapes, shape_types
+                )
 
                 # Process each shape
                 for data in layer_data:
-
-                    shape_id = data['shape_id']
-                    roi_id = data['roi_id']
-                    napari_coords = data['coords']
+                    shape_id = data["shape_id"]
+                    roi_id = data["roi_id"]
+                    napari_coords = data["coords"]
                     napari_coords[:, 2:4] = numpy.round(napari_coords[:, 2:4], 6)
 
                     if shape_id is not None and shape_id in napari_shape_ids:
-
                         omero_shape_data = omero_rois[roi_id][shape_id]
-                        omero_coords = numpy.array(omero_shape_data["coordinates"], dtype=numpy.float32)
+                        omero_coords = numpy.array(
+                            omero_shape_data["coordinates"], dtype=numpy.float32
+                        )
                         omero_coords[:, 2:4] = numpy.round(omero_coords[:, 2:4], 6)
 
                         same_coords = (
                             napari_coords.shape == omero_coords.shape
-                            and numpy.allclose(napari_coords, omero_coords, atol=1e-5, equal_nan=True)
+                            and numpy.allclose(
+                                napari_coords, omero_coords, atol=1e-5, equal_nan=True
+                            )
                         )
                         if same_coords:
                             continue
@@ -256,9 +264,7 @@ def save_rois(viewer, image):
                 shape_types = layer.shape_type
 
                 if isinstance(shape_types, str):
-                    shape_types = [
-                        layer.shape_type for _ in range(len(layer.data))
-                        ]
+                    shape_types = [layer.shape_type for _ in range(len(layer.data))]
 
                 for shape_type, data in zip(shape_types, layer.data):
                     shape = create_omero_shape(shape_type, data)
@@ -305,11 +311,14 @@ def extract_omero_rois_coords(image, result):
                 x = float(shape.getX().getValue())
                 y = float(shape.getY().getValue())
 
-                coords_4d = [[
-                    (t_val if t_val is not None else None),
-                    (z_val if z_val is not None else None),
-                    y, x
-                ]]
+                coords_4d = [
+                    [
+                        (t_val if t_val is not None else None),
+                        (z_val if z_val is not None else None),
+                        y,
+                        x,
+                    ]
+                ]
                 meta_shape_type = "point"
 
             else:
@@ -321,11 +330,15 @@ def extract_omero_rois_coords(image, result):
                 coords_2d, meta, _ = parsed
                 coords_2d = numpy.round(coords_2d, 6)
 
-                coords_4d = [[
-                    (t_val if t_val is not None else None),
-                    (z_val if z_val is not None else None),
-                    y, x
-                ] for y, x in coords_2d]
+                coords_4d = [
+                    [
+                        (t_val if t_val is not None else None),
+                        (z_val if z_val is not None else None),
+                        y,
+                        x,
+                    ]
+                    for y, x in coords_2d
+                ]
                 meta_shape_type = meta["shape_type"]
 
             # Get optional text/comment for the shape
@@ -362,7 +375,9 @@ def group_rois_for_omero(all_coords, roi_ids, shape_ids, shape_types):
     shape_type_storage = defaultdict(dict)
 
     #  Count how many times each XY set appears
-    for coords, roi_id, shape_id, shape_type in zip(all_coords, roi_ids, shape_ids, shape_types):
+    for coords, roi_id, shape_id, shape_type in zip(
+        all_coords, roi_ids, shape_ids, shape_types
+    ):
         arr = numpy.array(coords, dtype=numpy.float32).copy()
         yx_coords = tuple(map(tuple, numpy.round(arr[:, 2:4], 5)))
 
@@ -384,12 +399,14 @@ def group_rois_for_omero(all_coords, roi_ids, shape_ids, shape_types):
             if total_counts[roi_id][shape_id] > 1:
                 arr[:, 0:2] = numpy.nan
 
-            unique_shapes.append({
-                "roi_id": roi_id,
-                "shape_id": shape_id,
-                "shape_type": shape_type_storage[roi_id][shape_id],
-                "coords": arr
-            })
+            unique_shapes.append(
+                {
+                    "roi_id": roi_id,
+                    "shape_id": shape_id,
+                    "shape_type": shape_type_storage[roi_id][shape_id],
+                    "coords": arr,
+                }
+            )
 
     return unique_shapes
 
@@ -424,21 +441,21 @@ def update_shape(conn, image_id, duplicate_shape_id, napari_coords):
 
                     # Extract X coordinates
                     x1 = napari_coords[0][3]
-                    x2 = napari_coords[1][3]
+                    napari_coords[1][3]
                     x3 = napari_coords[2][3]
-                    x4 = napari_coords[3][3]
+                    napari_coords[3][3]
 
                     # Extract Y coordinates
                     y1 = napari_coords[0][2]
-                    y2 = napari_coords[1][2]
+                    napari_coords[1][2]
                     y3 = napari_coords[2][2]
-                    y4 = napari_coords[3][2]
+                    napari_coords[3][2]
 
                     # Update shape coordinates based on shape type
                     if shape_type == "PolygonI":
                         new_points = " ".join(
-                                        f"{y},{x}" for x, y in napari_coords[:, 2:]
-                                    )
+                            f"{y},{x}" for x, y in napari_coords[:, 2:]
+                        )
                         shape.setPoints(rstring(new_points))
 
                     elif shape_type == "RectangleI":
@@ -482,11 +499,11 @@ def clean_duplicate_shape_ids(layer):
     Proper shape IDs will be assigned later by create_roi.
     """
     processed_ids = set()
-    for i, shape_id in enumerate(layer.properties['shape_id']):
+    for i, shape_id in enumerate(layer.properties["shape_id"]):
         if shape_id is not None:
             if shape_id in processed_ids:
-                layer.properties['shape_id'][i] = None
-                layer.properties['roi_id'][i] = None
+                layer.properties["shape_id"][i] = None
+                layer.properties["roi_id"][i] = None
                 # print(f"Cleared duplicate shape at index {i}")
             else:
                 processed_ids.add(shape_id)
@@ -541,13 +558,13 @@ def create_omero_shape(shape_type, data):
     elif shape_type in ["rectangle", "ellipse"]:
         # corners go anti-clockwise starting top-left
         x1 = get_x(data[0])
-        x2 = get_x(data[1])
+        get_x(data[1])
         x3 = get_x(data[2])
-        x4 = get_x(data[3])
+        get_x(data[3])
         y1 = get_y(data[0])
-        y2 = get_y(data[1])
+        get_y(data[1])
         y3 = get_y(data[2])
-        y4 = get_y(data[3])
+        get_y(data[3])
         if shape_type == "rectangle":
             shape = RectangleI()
             shape.x = rdouble(x1)
