@@ -181,12 +181,67 @@ def save_rois(viewer, image):
         if type(layer) is points_layer:
             if len(layer.data) == 0:
                 continue
-            for p in layer.data:
-                points_layer_name = get_point_name(conn, image)
-                print("Creating Points in roi", points_layer_name)
-                # point = create_omero_point(p)
-                # roi = create_roi(conn, image.id, [point])
-                # print(f"Created ROI: {roi.id.val}")
+
+            napari_layer_name = get_point_name(conn, image)
+            if layer.name == napari_layer_name:
+
+                # OMERO point shapes currently on server
+                omero_point_shape_ids = { sid for roi in omero_rois.values() for sid, sdata in roi.items()
+                                            if sdata.get("shape_type") in ("point", "Point", "points")
+                }
+                napari_shape_ids = {sid for sid in layer.properties.get("shape_id", []) if sid is not None}
+
+                # Prepare to check updates & additions
+                napari_rois = layer.properties.get("roi_id", [None] * len(layer.data))
+                napari_shapes = layer.properties.get("shape_id", [None] * len(layer.data))
+
+                shapes_to_delete = omero_point_shape_ids - napari_shape_ids
+
+                if shapes_to_delete:
+                    # delete_rois(conn, result, shapes_to_delete)
+                    save_changes = True
+
+                # CHECK DUPLICATE, EDIT, CREATE NEW
+                points_to_add = []
+                napari_rois = layer.properties["roi_id"]
+                napari_shapes = layer.properties["shape_id"]
+                layer_data = group_points_for_omero(layer.data, napari_rois, napari_shapes)
+
+                # Process each shape
+                for data in layer_data:
+
+                    shape_id = data['shape_id']
+                    roi_id = data['roi_id']
+                    points_coords = data['coords']
+                    points_coords[:, 2:4] = numpy.round(points_coords[:, 2:4], 6)
+
+                    if shape_id is not None and shape_id in napari_shape_ids:
+
+                        omero_shape_data = omero_rois[roi_id][shape_id]
+                        omero_coords = numpy.array(omero_shape_data["coordinates"], dtype=numpy.float32)
+                        omero_coords[:, 2:4] = numpy.round(omero_coords[:, 2:4], 6)
+
+                        same_coords = (
+                            points_coords.shape == omero_coords.shape
+                            and numpy.allclose(points_coords, omero_coords, atol=1e-5, equal_nan=True)
+                        )
+                        if same_coords:
+                            continue
+                        else:
+                            update_shape(conn, img_id, shape_id, points_coords)
+                            save_changes = True
+                            continue
+                    else:
+                        if points_to_add:
+                            point = create_omero_point(points_coords)
+                            roi = create_roi(conn, image.id, [point])
+                            print(f"Created ROI: {roi.id.val}")
+            else:
+                for p in layer.data:
+                    point = create_omero_point(p)
+                    roi = create_roi(conn, image.id, [point])
+                    print(f"Created ROI: {roi.id.val}")
+
         elif type(layer) is shapes_layer:
             if len(layer.data) == 0 or len(layer.shape_type) == 0:
                 continue
@@ -355,6 +410,32 @@ def get_shapelayer_name(conn, image):
         return roi_layer_meta.get("name", None)
 
 
+def group_points_for_omero(all_coords, roi_ids, shape_ids):
+    storage = {}
+    totals = defaultdict(int)
+
+    for coords, rid, sid in zip(all_coords, roi_ids, shape_ids):
+        arr = numpy.array(coords, numpy.float32).copy()
+        if arr.ndim == 1:
+            arr = arr[None, :]
+        yx_coords = tuple(map(tuple, numpy.round(arr[:, 2:4], 5)))
+        storage[(rid, sid, yx_coords)] = arr.copy()   # last-wins
+        totals[(rid, sid)] += 1
+
+    unique_points = []
+    for (rid, sid, _), arr in storage.items():
+        arr = arr.copy()
+        if totals[(rid, sid)] > 1:
+            arr[:, 0:2] = numpy.nan  # zero out T/Z like your original code
+        unique_points.append({
+            "roi_id": rid,
+            "shape_id": sid,
+            "shape_type": "point",
+            "coords": arr
+        })
+    return unique_points
+
+
 def group_rois_for_omero(all_coords, roi_ids, shape_ids, shape_types):
     array_counts = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     array_storage = defaultdict(lambda: defaultdict(dict))
@@ -421,54 +502,74 @@ def update_shape(conn, image_id, duplicate_shape_id, napari_coords):
                     # Determine shape type (normalized, lowercase)
                     # RectangleI - rectangle
                     shape_type = shape.__class__.__name__
+                    if shape_type != "PointI":
+                        print("! points")
+                        # Extract X coordinates
+                        x1 = napari_coords[0][3]
+                        x2 = napari_coords[1][3]
+                        x3 = napari_coords[2][3]
+                        x4 = napari_coords[3][3]
 
-                    # Extract X coordinates
-                    x1 = napari_coords[0][3]
-                    x2 = napari_coords[1][3]
-                    x3 = napari_coords[2][3]
-                    x4 = napari_coords[3][3]
+                        # Extract Y coordinates
+                        y1 = napari_coords[0][2]
+                        y2 = napari_coords[1][2]
+                        y3 = napari_coords[2][2]
+                        y4 = napari_coords[3][2]
 
-                    # Extract Y coordinates
-                    y1 = napari_coords[0][2]
-                    y2 = napari_coords[1][2]
-                    y3 = napari_coords[2][2]
-                    y4 = napari_coords[3][2]
+                        # Update shape coordinates based on shape type
+                        if shape_type == "PolygonI":
+                            new_points = " ".join(
+                                            f"{y},{x}" for x, y in napari_coords[:, 2:]
+                                        )
+                            shape.setPoints(rstring(new_points))
 
-                    # Update shape coordinates based on shape type
-                    if shape_type == "PolygonI":
-                        new_points = " ".join(
-                                        f"{y},{x}" for x, y in napari_coords[:, 2:]
-                                    )
-                        shape.setPoints(rstring(new_points))
+                        elif shape_type == "RectangleI":
+                            # Update rectangle position and size
+                            shape.setX(rdouble(x1))
+                            shape.setY(rdouble(y1))
+                            shape.setWidth(rdouble(abs(x3 - x1)))
+                            shape.setHeight(rdouble(abs(y3 - y1)))
 
-                    elif shape_type == "RectangleI":
-                        # Update rectangle position and size
-                        shape.setX(rdouble(x1))
-                        shape.setY(rdouble(y1))
-                        shape.setWidth(rdouble(abs(x3 - x1)))
-                        shape.setHeight(rdouble(abs(y3 - y1)))
+                        elif shape_type == "EllipseI":
+                            # Update ellipse center and radii
+                            shape.setX(rdouble((x1 + x3) / 2))
+                            shape.setY(rdouble((y1 + y3) / 2))
+                            shape.setRadiusX(rdouble(abs(x3 - x1) / 2))
+                            shape.setRadiusY(rdouble(abs(y3 - y1) / 2))
 
-                    elif shape_type == "EllipseI":
-                        # Update ellipse center and radii
-                        shape.setX(rdouble((x1 + x3) / 2))
-                        shape.setY(rdouble((y1 + y3) / 2))
-                        shape.setRadiusX(rdouble(abs(x3 - x1) / 2))
-                        shape.setRadiusY(rdouble(abs(y3 - y1) / 2))
+                        t_index = napari_coords[0][0]
+                        z_index = napari_coords[0][1]
+                        if not (t_index is None or numpy.isnan(t_index)):
+                            shape.setTheT(rint(int(t_index)))
+                        if not (z_index is None or numpy.isnan(z_index)):
+                            shape.setTheZ(rint(int(z_index)))
 
-                    t_index = napari_coords[0][0]
-                    z_index = napari_coords[0][1]
-                    if not (t_index is None or numpy.isnan(t_index)):
-                        shape.setTheT(rint(int(t_index)))
-                    if not (z_index is None or numpy.isnan(z_index)):
-                        shape.setTheZ(rint(int(z_index)))
+                        # Add comment to indicate edit origin
+                        shape.setTextValue(rstring("Edited in Napari"))
 
-                    # Add comment to indicate edit origin
-                    shape.setTextValue(rstring("Edited in Napari"))
+                        # Save the updated shape back to OMERO
+                        conn.getUpdateService().saveAndReturnObject(shape)
 
-                    # Save the updated shape back to OMERO
-                    conn.getUpdateService().saveAndReturnObject(shape)
+                        return True  # Successfully updated
 
-                    return True  # Successfully updated
+                    else:
+                        # Extract XY coordinates
+                        x = float(napari_coords[0][3])   # X
+                        y = float(napari_coords[0][2])   # Y
+                        shape.setX(rdouble(x))
+                        shape.setY(rdouble(y))
+
+                        t_index = napari_coords[0][0]
+                        z_index = napari_coords[0][1]
+                        if not (t_index is None or numpy.isnan(t_index)):
+                            shape.setTheT(rint(int(t_index)))
+                        if not (z_index is None or numpy.isnan(z_index)):
+                            shape.setTheZ(rint(int(z_index)))
+
+                        shape.setTextValue(rstring("Edited in Napari"))
+                        conn.getUpdateService().saveAndReturnObject(shape)
+
+                        return True
 
     return False
 
