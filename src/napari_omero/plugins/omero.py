@@ -179,6 +179,8 @@ def save_rois(viewer, image):
     omero_rois = extract_omero_rois_coords(image, result)
     for layer in viewer.layers:
         if type(layer) is points_layer:
+            if len(layer.data) == 0:
+                continue
             for p in layer.data:
                 points_layer_name = get_point_name(conn, image)
                 print("Creating Points in roi", points_layer_name)
@@ -200,7 +202,6 @@ def save_rois(viewer, image):
 
                 # Collect existing OMERO shape IDs
                 omero_shape_ids = {shape_id for roi in omero_rois.values() for shape_id in roi.keys()}
-                print("all shape id", layer.properties['shape_id'])
                 napari_shape_ids = {shape_id for shape_id in layer.properties['shape_id'] if shape_id is not None}
 
                 shapes_to_delete = omero_shape_ids - napari_shape_ids
@@ -228,18 +229,14 @@ def save_rois(viewer, image):
                         omero_shape_data = omero_rois[roi_id][shape_id]
                         omero_coords = numpy.array(omero_shape_data["coordinates"], dtype=numpy.float32)
                         omero_coords[:, 2:4] = numpy.round(omero_coords[:, 2:4], 6)
-                        print("Omero coords", omero_coords)
-                        print("napari coords", napari_coords)
 
                         same_coords = (
                             napari_coords.shape == omero_coords.shape
                             and numpy.allclose(napari_coords, omero_coords, atol=1e-5, equal_nan=True)
                         )
                         if same_coords:
-                            print("Duplicate")
                             continue
                         else:
-                            print("We have to update and add")
                             update_shape(conn, img_id, shape_id, napari_coords)
                             save_changes = True
                             continue
@@ -253,7 +250,6 @@ def save_rois(viewer, image):
                         roi = create_roi(conn, img_id, [shape])
                         print(f"Created ROI: {roi.id.val}")
                     save_changes = True
-                    # napari_shape_ids.clear()
 
             else:
                 # Layer is not from OMERO, create new ROIs for all shapes
